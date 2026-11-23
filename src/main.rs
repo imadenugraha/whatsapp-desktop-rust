@@ -45,6 +45,16 @@ fn is_internal(url: &str) -> bool {
     host == "whatsapp.com" || host.ends_with(".whatsapp.com") || host.ends_with(".whatsapp.net")
 }
 
+/// Hand a link to the OS only if it is a plain web or mail link.
+/// Blocks file://, smb://, custom app schemes, etc.
+fn open_external(url: &str) {
+    let lower = url.to_ascii_lowercase();
+    let allowed = lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:");
+    if allowed && !url.chars().any(char::is_control) {
+        let _ = open::that(url);
+    }
+}
+
 /// Pick a non-clobbering path in the user's Downloads folder.
 fn download_path(suggested: &Path) -> PathBuf {
     let dir = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
@@ -139,13 +149,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if is_internal(&url) {
                 true
             } else {
-                let _ = open::that(url);
+                open_external(&url);
                 false
             }
         })
         .with_new_window_req_handler(|url, _| {
             if !is_internal(&url) {
-                let _ = open::that(url);
+                open_external(&url);
             }
             NewWindowResponse::Deny
         })
