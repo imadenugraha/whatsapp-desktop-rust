@@ -21,6 +21,14 @@ use tao::platform::unix::WindowExtUnix;
 use wry::WebViewBuilderExtUnix;
 
 const APP_NAME: &str = "WhatsApp Desktop";
+
+// Sound played with each notification (freedesktop sound theme / Windows / macOS names).
+#[cfg(target_os = "linux")]
+const NOTIFY_SOUND: &str = "message-new-instant";
+#[cfg(target_os = "windows")]
+const NOTIFY_SOUND: &str = "IM";
+#[cfg(target_os = "macos")]
+const NOTIFY_SOUND: &str = "Ping";
 const SPLASH: &str = include_str!("assets/splash.html");
 const INIT_JS: &str = include_str!("assets/init.js");
 
@@ -112,6 +120,7 @@ fn handle_ipc(body: &str, proxy: &tao::event_loop::EventLoopProxy<UserEvent>) {
             if let Err(e) = Notification::new()
                 .appname(APP_NAME)
                 .icon("whatsapp-desktop")
+                .sound_name(NOTIFY_SOUND)
                 .hint(notify_rust::Hint::DesktopEntry("whatsapp-desktop".into()))
                 .summary(&text("title"))
                 .body(&text("body"))
@@ -171,7 +180,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let win_first = first_nav.clone();
     // Set only while the top-level page is WhatsApp; gates device permissions.
     let on_wa = Arc::new(AtomicBool::new(false));
-    let nav_on_wa = on_wa.clone();
+    let load_on_wa = on_wa.clone();
     let perm_on_wa = on_wa.clone();
     let builder = WebViewBuilder::new_with_web_context(&mut context)
         .with_user_agent(USER_AGENT)
@@ -185,12 +194,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 handle_ipc(req.body(), &ipc_proxy);
             }
         })
+        // Page-load events report the top-level URL: fail closed on anything
+        // that is not the WhatsApp page (including a top-level pdf-viewer).
+        .with_on_page_load_handler(move |_event, url| {
+            load_on_wa.store(is_whatsapp_page(&url), Ordering::Relaxed);
+        })
         .with_navigation_handler(move |url| {
             if is_internal(&url, &nav_first) {
-                // The PDF frame is a subframe; it must not change the page state.
-                if !is_pdf_viewer(&url) {
-                    nav_on_wa.store(is_whatsapp_page(&url), Ordering::Relaxed);
-                }
                 true
             } else {
                 if cfg!(debug_assertions) {
