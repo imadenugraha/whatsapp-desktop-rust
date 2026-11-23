@@ -48,13 +48,25 @@ fn is_whatsapp_page(url: &str) -> bool {
         && u.host_str().is_some_and(|h| WA_HOSTS.contains(&h))
 }
 
+/// WhatsApp's embedded PDF viewer frame. Allowed to load in-app, but it does
+/// not get the permissions or IPC access of the main page.
+fn is_pdf_viewer(url: &str) -> bool {
+    let Ok(u) = url::Url::parse(url) else { return false };
+    u.scheme() == "https"
+        && u.username().is_empty()
+        && u.password().is_none()
+        && u.port().is_none()
+        && u.host_str() == Some("webtp.whatsapp.net")
+        && u.path().starts_with("/pdf-viewer/")
+}
+
 /// Navigations that stay inside the app. `first` allows the initial splash
 /// page (loaded as data:/about: depending on platform) exactly once.
 fn is_internal(url: &str, first: &Cell<bool>) -> bool {
     if first.replace(false) {
         return true;
     }
-    if url == "about:blank" || is_whatsapp_page(url) {
+    if url == "about:blank" || is_whatsapp_page(url) || is_pdf_viewer(url) {
         return true;
     }
     // blob: URLs created by WhatsApp itself (media/downloads).
@@ -175,14 +187,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .with_navigation_handler(move |url| {
             if is_internal(&url, &nav_first) {
-                nav_on_wa.store(is_whatsapp_page(&url), Ordering::Relaxed);
+                // The PDF frame is a subframe; it must not change the page state.
+                if !is_pdf_viewer(&url) {
+                    nav_on_wa.store(is_whatsapp_page(&url), Ordering::Relaxed);
+                }
                 true
             } else {
+                if cfg!(debug_assertions) {
+                    eprintln!("blocked navigation: {url}");
+                }
                 open_external(&url);
                 false
             }
         })
         .with_new_window_req_handler(move |url, _| {
+            if cfg!(debug_assertions) {
+                eprintln!("new window request: {url}");
+            }
             if !is_internal(&url, &win_first) {
                 open_external(&url);
             }
@@ -194,7 +215,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 PermissionResponse::Allow
             }
-            _ => PermissionResponse::Deny,
+            other => {
+                if cfg!(debug_assertions) {
+                    eprintln!("permission denied: {other:?}");
+                }
+                PermissionResponse::Deny
+            }
         })
         .with_download_started_handler(|_url, path| {
             *path = download_path(path);
