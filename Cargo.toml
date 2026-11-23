@@ -1,0 +1,42 @@
+[package]
+name = "whatsapp-desktop"
+version = "0.1.0"
+edition = "2024"
+description = "Unofficial lightweight desktop wrapper for WhatsApp Web"
+license = "Apache-2.0"
+authors = ["imadenugraha"]
+repository = "https://github.com/imadenugraha/whatsapp-desktop-rust"
+
+[dependencies]
+dirs = "7.0.0"
+notify-rust = "4.19.0"
+open = "5.4.5"
+serde_json = "1.0.154"
+tao = "0.37.3"
+wry = "0.57.3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = "0.21.2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[package.metadata.deb]
+name = "whatsapp-desktop"
+maintainer = "imadenugraha"
+section = "net"
+priority = "optional"
+depends = "$auto, libwebkit2gtk-4.1-0, libgtk-3-0"
+extended-description = """\
+Standalone window for WhatsApp Web built with Rust and the system webview.
+No telemetry. Not affiliated with WhatsApp or Meta."""
+assets = [
+  ["target/release/whatsapp-desktop", "usr/bin/", "755"],
+  ["packaging/whatsapp-desktop.desktop", "usr/share/applications/", "644"],
+  ["packaging/whatsapp-desktop.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+  ["README.md", "usr/share/doc/whatsapp-desktop/README", "644"],
+]

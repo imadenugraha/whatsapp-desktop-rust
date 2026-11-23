@@ -1,0 +1,32 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark">
+<style>
+:root{color-scheme:light dark;--bg:#f0f2f5;--fg:#41525d;--accent:#00a884}
+@media(prefers-color-scheme:dark){:root{--bg:#111b21;--fg:#aebac1}}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font:15px system-ui,sans-serif}
+body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px}
+.spin{width:38px;height:38px;border:4px solid color-mix(in srgb,var(--accent) 25%,transparent);border-top-color:var(--accent);border-radius:50%;animation:s .9s linear infinite}
+@keyframes s{to{transform:rotate(360deg)}}
+button{display:none;background:var(--accent);color:#fff;border:0;border-radius:20px;padding:9px 22px;font:inherit;cursor:pointer}
+.off .spin{display:none}.off button{display:block}
+</style></head>
+<body>
+<div class="spin"></div>
+<div id="msg">Loading WhatsApp…</div>
+<button onclick="go()">Retry</button>
+<script>
+var URL_="https://web.whatsapp.com/";
+function go(){
+  document.body.classList.remove("off");
+  document.getElementById("msg").textContent="Loading WhatsApp…";
+  var c=new AbortController(),t=setTimeout(function(){c.abort()},10000);
+  fetch(URL_,{mode:"no-cors",cache:"no-store",signal:c.signal})
+    .then(function(){clearTimeout(t);location.replace(URL_)})
+    .catch(function(){clearTimeout(t);
+      document.body.classList.add("off");
+      document.getElementById("msg").textContent="No connection. Check your network.";
+    });
+}
+go();
+window.addEventListener("online",go);
+</script></body></html>
