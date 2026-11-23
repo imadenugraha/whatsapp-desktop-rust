@@ -1,6 +1,9 @@
 //! Minimal, privacy-friendly desktop wrapper around WhatsApp Web.
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 use notify_rust::Notification;
 use serde_json::Value;
@@ -33,16 +36,29 @@ enum UserEvent {
     Title(String),
 }
 
-/// Only WhatsApp's own hosts (and the local splash page) stay in-app.
-fn is_internal(url: &str) -> bool {
-    if url.starts_with("about:") || url.starts_with("data:") || url.starts_with("blob:") || url.starts_with("wry:") {
+const WA_HOSTS: [&str; 1] = ["web.whatsapp.com"];
+
+/// True for https pages on WhatsApp's own web host (no credentials in URL).
+fn is_whatsapp_page(url: &str) -> bool {
+    let Ok(u) = url::Url::parse(url) else { return false };
+    u.scheme() == "https"
+        && u.username().is_empty()
+        && u.password().is_none()
+        && u.port().is_none()
+        && u.host_str().is_some_and(|h| WA_HOSTS.contains(&h))
+}
+
+/// Navigations that stay inside the app. `first` allows the initial splash
+/// page (loaded as data:/about: depending on platform) exactly once.
+fn is_internal(url: &str, first: &Cell<bool>) -> bool {
+    if first.replace(false) {
         return true;
     }
-    let Some(rest) = url.strip_prefix("https://") else {
-        return false;
-    };
-    let host = rest.split(['/', '?', '#', ':']).next().unwrap_or("");
-    host == "whatsapp.com" || host.ends_with(".whatsapp.com") || host.ends_with(".whatsapp.net")
+    if url == "about:blank" || is_whatsapp_page(url) {
+        return true;
+    }
+    // blob: URLs created by WhatsApp itself (media/downloads).
+    url::Url::parse(url).is_ok_and(|u| u.scheme() == "blob" && is_whatsapp_page(u.path()))
 }
 
 /// Hand a link to the OS only if it is a plain web or mail link.
@@ -138,29 +154,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut context = WebContext::new(data_dir);
 
     let ipc_proxy = proxy.clone();
+    let first_nav = Rc::new(Cell::new(true));
+    let nav_first = first_nav.clone();
+    let win_first = first_nav.clone();
+    // Set only while the top-level page is WhatsApp; gates device permissions.
+    let on_wa = Arc::new(AtomicBool::new(false));
+    let nav_on_wa = on_wa.clone();
+    let perm_on_wa = on_wa.clone();
     let builder = WebViewBuilder::new_with_web_context(&mut context)
         .with_user_agent(USER_AGENT)
         .with_html(SPLASH)
         .with_initialization_script(INIT_JS)
         .with_clipboard(true)
         .with_devtools(cfg!(debug_assertions))
-        .with_ipc_handler(move |req| handle_ipc(req.body(), &ipc_proxy))
-        .with_navigation_handler(|url| {
-            if is_internal(&url) {
+        .with_ipc_handler(move |req| {
+            // Only WhatsApp's own page may talk to the native side.
+            if is_whatsapp_page(&req.uri().to_string()) {
+                handle_ipc(req.body(), &ipc_proxy);
+            }
+        })
+        .with_navigation_handler(move |url| {
+            if is_internal(&url, &nav_first) {
+                nav_on_wa.store(is_whatsapp_page(&url), Ordering::Relaxed);
                 true
             } else {
                 open_external(&url);
                 false
             }
         })
-        .with_new_window_req_handler(|url, _| {
-            if !is_internal(&url) {
+        .with_new_window_req_handler(move |url, _| {
+            if !is_internal(&url, &win_first) {
                 open_external(&url);
             }
             NewWindowResponse::Deny
         })
-        .with_permission_handler(|kind| match kind {
-            PermissionKind::Notifications | PermissionKind::Microphone | PermissionKind::Camera => PermissionResponse::Allow,
+        .with_permission_handler(move |kind| match kind {
+            PermissionKind::Notifications | PermissionKind::Microphone | PermissionKind::Camera
+                if perm_on_wa.load(Ordering::Relaxed) =>
+            {
+                PermissionResponse::Allow
+            }
             _ => PermissionResponse::Deny,
         })
         .with_download_started_handler(|_url, path| {

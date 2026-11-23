@@ -2649,6 +2649,7 @@ dependencies = [
  "open",
  "serde_json",
  "tao",
+ "url",
  "wry",
 ]
 
