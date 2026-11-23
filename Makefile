@@ -27,7 +27,7 @@ deb:
 	@ls -1 target/debian/$(NAME)_*.deb
 
 install-deb: deb
-	sudo apt install -y $(lastword $(sort $(wildcard target/debian/$(NAME)_*.deb)))
+	sudo apt install -y ./$(lastword $(sort $(wildcard target/debian/$(NAME)_*.deb)))
 
 uninstall:
 	sudo apt remove -y $(NAME)
