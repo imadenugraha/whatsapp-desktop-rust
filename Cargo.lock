@@ -2641,9 +2641,11 @@ dependencies = [
 
 [[package]]
 name = "whatsapp-desktop"
-version = "0.1.1"
+version = "0.2.1"
 dependencies = [
+ "base64",
  "dirs",
+ "gtk",
  "muda",
  "notify-rust",
  "open",
