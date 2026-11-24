@@ -18,7 +18,7 @@ use wry::{NewWindowResponse, PermissionKind, PermissionResponse, WebContext, Web
 #[cfg(target_os = "linux")]
 use tao::platform::unix::WindowExtUnix;
 #[cfg(target_os = "linux")]
-use wry::WebViewBuilderExtUnix;
+use wry::{WebViewBuilderExtUnix, WebViewExtUnix};
 
 const APP_NAME: &str = "WhatsApp Desktop";
 
@@ -44,6 +44,12 @@ enum UserEvent {
     Title(String),
     PasteImage,
 }
+
+/// A native clipboard read is honoured only this soon after a real paste
+/// shortcut (Ctrl+V / Shift+Insert) seen by GTK, so page script cannot poll
+/// the clipboard on its own.
+#[cfg(target_os = "linux")]
+const PASTE_GESTURE_WINDOW: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// Limits for images handed to the page on paste.
 #[cfg(target_os = "linux")]
@@ -310,6 +316,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "linux")]
     let webview = builder.build_gtk(window.default_vbox().ok_or("no gtk vbox")?)?;
 
+    // Timestamp of the last real paste shortcut; consumed by one native read.
+    #[cfg(target_os = "linux")]
+    let paste_gesture: Rc<Cell<Option<std::time::Instant>>> = Rc::new(Cell::new(None));
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::{gdk::{ModifierType, keys::constants as key}, glib::Propagation, prelude::WidgetExt};
+        let gesture = paste_gesture.clone();
+        webview.webview().connect_key_press_event(move |_, e| {
+            let state = e.state();
+            let keyval = e.keyval();
+            let ctrl_v = state.contains(ModifierType::CONTROL_MASK) && (keyval == key::v || keyval == key::V);
+            let shift_ins = state.contains(ModifierType::SHIFT_MASK) && keyval == key::Insert;
+            if ctrl_v || shift_ins {
+                gesture.set(Some(std::time::Instant::now()));
+            }
+            Propagation::Proceed
+        });
+    }
+
     event_loop.run(move |event, _, flow| {
         *flow = ControlFlow::Wait;
         match event {
@@ -320,9 +345,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             #[cfg(target_os = "linux")]
             Event::UserEvent(UserEvent::PasteImage) => {
-                // GTK clipboard must be read on the main thread; only feed the
-                // page while WhatsApp is the top-level document.
-                if paste_on_wa.load(Ordering::Relaxed) {
+                // GTK clipboard must be read on the main thread; only after a real
+                // paste shortcut, and only while WhatsApp is the top-level document.
+                let gesture = paste_gesture.take().is_some_and(|t| t.elapsed() <= PASTE_GESTURE_WINDOW);
+                if gesture && paste_on_wa.load(Ordering::Relaxed) {
                     if let Some(json) = clipboard_images_json() {
                         let _ = webview.evaluate_script(&format!("window.__wdPaste&&window.__wdPaste({json})"));
                     } else if cfg!(debug_assertions) {

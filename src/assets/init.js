@@ -47,7 +47,7 @@
     pasteTarget = document.activeElement || document.body;
     post({ t: "paste_image" });
   }, true);
-  window.__wdPaste = function (list) {
+  var wdPaste = function (list) {
     try {
       var dt = new DataTransfer();
       list.forEach(function (f) {
@@ -60,6 +60,8 @@
       t.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
     } catch (e) {}
   };
+  // Not replaceable by page script.
+  Object.defineProperty(window, "__wdPaste", { value: wdPaste, writable: false, configurable: false });
 
   // Unread count in window title.
   var last = "";
