@@ -1,7 +1,7 @@
 name: whatsapp-desktop
 title: WhatsApp Desktop
 base: core24
-version: '0.1.1'
+version: '0.2.0'
 summary: Unofficial lightweight desktop wrapper for WhatsApp Web
 description: |
   Standalone window for WhatsApp Web built with Rust and the system webview.

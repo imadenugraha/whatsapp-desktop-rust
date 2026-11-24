@@ -42,6 +42,69 @@ const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleW
 
 enum UserEvent {
     Title(String),
+    PasteImage,
+}
+
+/// Limits for images handed to the page on paste.
+#[cfg(target_os = "linux")]
+const MAX_PASTE_BYTES: u64 = 20 * 1024 * 1024;
+#[cfg(target_os = "linux")]
+const MAX_PASTE_FILES: usize = 10;
+
+/// Image type from magic bytes (never trust the file extension).
+#[cfg(target_os = "linux")]
+fn sniff_image(data: &[u8]) -> Option<&'static str> {
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if data.len() > 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+/// Clipboard images as a JSON array of `{name, type, data(base64)}`.
+/// WebKitGTK exposes neither bitmaps nor copied files to the page, so read
+/// them natively: first a bitmap (screenshots, "Copy Image"), else image
+/// files copied from a file manager (`text/uri-list`).
+#[cfg(target_os = "linux")]
+fn clipboard_images_json() -> Option<String> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use serde_json::json;
+    let clipboard = gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD);
+    if cfg!(debug_assertions) {
+        let targets = clipboard
+            .wait_for_targets()
+            .map(|t| t.iter().map(|a| a.name().to_string()).collect::<Vec<_>>());
+        eprintln!("paste: clipboard targets {targets:?}");
+    }
+
+    let mut files = Vec::new();
+    if let Some(pixbuf) = clipboard.wait_for_image() {
+        let png = pixbuf.save_to_bufferv("png", &[]).ok()?;
+        if png.len() as u64 <= MAX_PASTE_BYTES {
+            files.push(json!({"name": "image.png", "type": "image/png", "data": STANDARD.encode(png)}));
+        }
+    } else {
+        let mut total = 0u64;
+        for uri in clipboard.wait_for_uris().iter().take(MAX_PASTE_FILES) {
+            let Ok(path) = url::Url::parse(uri).map_err(drop).and_then(|u| u.to_file_path()) else { continue };
+            let Ok(meta) = std::fs::metadata(&path) else { continue };
+            total += meta.len();
+            if !meta.is_file() || total > MAX_PASTE_BYTES {
+                continue;
+            }
+            let Ok(data) = std::fs::read(&path) else { continue };
+            let Some(mime) = sniff_image(&data) else { continue };
+            let name = path.file_name().map_or_else(|| "image".into(), |n| n.to_string_lossy().into_owned());
+            files.push(json!({"name": name, "type": mime, "data": STANDARD.encode(&data)}));
+        }
+    }
+    (!files.is_empty()).then(|| serde_json::Value::Array(files).to_string())
 }
 
 const WA_HOSTS: [&str; 1] = ["web.whatsapp.com"];
@@ -129,6 +192,9 @@ fn handle_ipc(body: &str, proxy: &tao::event_loop::EventLoopProxy<UserEvent>) {
                 eprintln!("notification failed: {e}");
             }
         }
+        Some("paste_image") => {
+            let _ = proxy.send_event(UserEvent::PasteImage);
+        }
         Some("title") => {
             let _ = proxy.send_event(UserEvent::Title(text("title")));
         }
@@ -181,6 +247,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set only while the top-level page is WhatsApp; gates device permissions.
     let on_wa = Arc::new(AtomicBool::new(false));
     let load_on_wa = on_wa.clone();
+    #[cfg(target_os = "linux")]
+    let paste_on_wa = on_wa.clone();
     let perm_on_wa = on_wa.clone();
     let builder = WebViewBuilder::new_with_web_context(&mut context)
         .with_user_agent(USER_AGENT)
@@ -241,7 +309,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let webview = builder.build(&window)?;
     #[cfg(target_os = "linux")]
     let webview = builder.build_gtk(window.default_vbox().ok_or("no gtk vbox")?)?;
-    let _keep = &webview;
 
     event_loop.run(move |event, _, flow| {
         *flow = ControlFlow::Wait;
@@ -250,6 +317,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Event::UserEvent(UserEvent::Title(t)) => {
                 let unread = t.trim().starts_with('(');
                 window.set_title(&if unread { format!("{t} - {APP_NAME}") } else { APP_NAME.to_string() });
+            }
+            #[cfg(target_os = "linux")]
+            Event::UserEvent(UserEvent::PasteImage) => {
+                // GTK clipboard must be read on the main thread; only feed the
+                // page while WhatsApp is the top-level document.
+                if paste_on_wa.load(Ordering::Relaxed) {
+                    if let Some(json) = clipboard_images_json() {
+                        let _ = webview.evaluate_script(&format!("window.__wdPaste&&window.__wdPaste({json})"));
+                    } else if cfg!(debug_assertions) {
+                        eprintln!("paste: no image on clipboard");
+                    }
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            Event::UserEvent(UserEvent::PasteImage) => {
+                let _ = &webview;
             }
             _ => {}
         }

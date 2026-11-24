@@ -32,6 +32,35 @@
     }
   } catch (e) {}
 
+  // Image paste: WebKitGTK does not expose clipboard bitmaps to the page, so
+  // ask the native side for the clipboard image and replay it as a paste event.
+  // Only runs on a user paste (Ctrl+V / menu) that carries no files or text.
+  var pasteTarget = null;
+  document.addEventListener("paste", function (e) {
+    var cd = e.clipboardData;
+    if (!e.isTrusted || !cd || (cd.files && cd.files.length)) return;
+    if (cd.getData("text/plain")) return;
+    var html = cd.getData("text/html");
+    if (html && !/<img/i.test(html)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    pasteTarget = document.activeElement || document.body;
+    post({ t: "paste_image" });
+  }, true);
+  window.__wdPaste = function (list) {
+    try {
+      var dt = new DataTransfer();
+      list.forEach(function (f) {
+        var bin = atob(f.data), bytes = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        dt.items.add(new File([bytes], f.name, { type: f.type }));
+      });
+      var t = pasteTarget && document.contains(pasteTarget) ? pasteTarget : (document.activeElement || document.body);
+      pasteTarget = null;
+      t.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    } catch (e) {}
+  };
+
   // Unread count in window title.
   var last = "";
   function title() {
