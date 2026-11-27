@@ -160,13 +160,32 @@ fn open_external(url: &str) {
     }
 }
 
+/// Server-suggested file name reduced to a safe single path component.
+fn sanitize_file_name(suggested: &Path) -> String {
+    const MAX_BYTES: usize = 200;
+    let raw = suggested.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut name: String = raw
+        .chars()
+        .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
+        .collect();
+    while name.len() > MAX_BYTES {
+        name.pop();
+    }
+    let name = name.trim().to_owned();
+    if name.is_empty() || name == "." || name == ".." {
+        "download".into()
+    } else {
+        name
+    }
+}
+
 /// Pick a non-clobbering path in the user's Downloads folder.
 fn download_path(suggested: &Path) -> PathBuf {
-    let dir = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
-    let name = suggested
-        .file_name()
-        .map(|n| n.to_owned())
-        .unwrap_or_else(|| "download".into());
+    let mut dir = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
+    if std::fs::create_dir_all(&dir).is_err() {
+        dir = std::env::temp_dir();
+    }
+    let name = sanitize_file_name(suggested);
     let mut out = dir.join(&name);
     let stem = Path::new(&name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let ext = Path::new(&name).extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
@@ -178,6 +197,22 @@ fn download_path(suggested: &Path) -> PathBuf {
     out
 }
 
+/// Native desktop notification; `sound` only for chat messages.
+fn notify(title: &str, body: &str, sound: bool) {
+    let mut n = Notification::new();
+    n.appname(APP_NAME)
+        .icon("whatsapp-desktop")
+        .hint(notify_rust::Hint::DesktopEntry("whatsapp-desktop".into()))
+        .summary(title)
+        .body(body);
+    if sound {
+        n.sound_name(NOTIFY_SOUND);
+    }
+    if let Err(e) = n.show() {
+        eprintln!("notification failed: {e}");
+    }
+}
+
 fn handle_ipc(body: &str, proxy: &tao::event_loop::EventLoopProxy<UserEvent>) {
     let Ok(v) = serde_json::from_str::<Value>(body) else { return };
     let text = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
@@ -186,17 +221,7 @@ fn handle_ipc(body: &str, proxy: &tao::event_loop::EventLoopProxy<UserEvent>) {
             if cfg!(debug_assertions) {
                 eprintln!("notify: {} / {}", text("title"), text("body"));
             }
-            if let Err(e) = Notification::new()
-                .appname(APP_NAME)
-                .icon("whatsapp-desktop")
-                .sound_name(NOTIFY_SOUND)
-                .hint(notify_rust::Hint::DesktopEntry("whatsapp-desktop".into()))
-                .summary(&text("title"))
-                .body(&text("body"))
-                .show()
-            {
-                eprintln!("notification failed: {e}");
-            }
+            notify(&text("title"), &text("body"), true);
         }
         Some("paste_image") => {
             let _ = proxy.send_event(UserEvent::PasteImage);
@@ -306,9 +331,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 PermissionResponse::Deny
             }
         })
-        .with_download_started_handler(|_url, path| {
+        .with_download_started_handler(|url, path| {
+            let before = path.clone();
             *path = download_path(path);
+            if cfg!(debug_assertions) {
+                eprintln!("download started: {url} suggested={before:?} -> {path:?}");
+            }
             true
+        })
+        .with_download_completed_handler(|url, path, ok| {
+            if cfg!(debug_assertions) {
+                eprintln!("download finished: {url} path={path:?} ok={ok}");
+            }
+            if ok {
+                let name = path
+                    .as_deref()
+                    .and_then(Path::file_name)
+                    .map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
+                notify("Download selesai", &name, false);
+            } else {
+                notify("Download gagal", "File tidak dapat disimpan.", false);
+            }
         });
 
     #[cfg(not(target_os = "linux"))]
