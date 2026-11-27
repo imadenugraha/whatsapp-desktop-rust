@@ -1,6 +1,6 @@
 [package]
 name = "whatsapp-desktop"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 description = "Unofficial lightweight desktop wrapper for WhatsApp Web"
 license = "Apache-2.0"
